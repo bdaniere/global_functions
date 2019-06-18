@@ -6,17 +6,26 @@ import folium
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from geoalchemy2 import Geometry, WKTElement
 import sqlalchemy
-import sqlalchemy
-from advanced_script import raster_processing
 from fiona.crs import from_epsg
 from shapely.geometry import Point
 from sqlalchemy import create_engine
+
+# from advanced_script import raster_processing
 from unitary_tests import unitary_tests
 
 """ Global variable """
 # formatting the console outputs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s -- %(levelname)s -- %(message)s')
+
+db_name = param["prod_connexion"]["db_name"]
+username = param["prod_connexion"]["username"]
+password = param["prod_connexion"]["password"]
+host = param["prod_connexion"]["host"]
+port = param["prod_connexion"]["port"]
+prod_conn = "postgresql://{}:{}@{}:{}/{}".format(username, password, host, port,
+                                                      db_name)
 
 """ Functions for reading /writing with Postgis  """
 
@@ -36,17 +45,33 @@ def import_table(table_name, con):
 
 
 def polygon_to_multipolygon(gdf):
-    """ Transform Polygon Geometry to MultiPolygon """
+    """ Transform GeoDataFrame Polygon Geometry to MultiPolygon """
 
     for index in gdf.index:
         if gdf.geometry[index].type == 'Polygon':
             gdf.geometry.loc[index] = MultiPolygon([gdf.geometry.loc[index]])
 
+    return gdf
+
+def multipolygon_to_polygon(gdf):
+    """ Transform GeoDataFrame (Surface) Geometry to simple Polygon - Deagregator """
+
+    gdf_singlepoly = gdf[gdf.geometry.type == 'Polygon']
+    gdf_multipoly = gdf[gdf.geometry.type == 'MultiPolygon']
+
+    for i, row in gdf_multipoly.iterrows():
+        series_geometries = pd.Series(row.geometry)
+        df = pd.concat([gpd.GeoDataFrame(row, crs=gdf_multipoly.crs).T] * len(series_geometries), ignore_index=True)
+        df['geometry'] = series_geometries
+        gdf_singlepoly = pd.concat([gdf_singlepoly, df])
+
+    gdf_singlepoly.reset_index(inplace=True, drop=True)
+    return gdf_singlepoly
 
 def write_output(gdf, table_name, schema, conn):
-    """ Write GeoDataFrame in PostGis Table
+    """ Write GeoDataFrame in PostGis Table / execute some unitary tests
 
-    :type gdf: GeoDataFrame
+    :type gdf: GeoDataFrame (geometry column = "geometry")
     :param table_name : name of the output Postgis table
     :param schema: name of the output Postgis schema
     :type conn: sqlalchemy.Engine
@@ -80,7 +105,7 @@ def write_output(gdf, table_name, schema, conn):
 
 
 def execute_sql_request(ch_sql_request, sql_file, new_value, con):
-    """  Open a template sql file containing names to modify
+    """  Open a template sql file containing request whose names to modify
          replacing the name with a new value
          & execute the sql request
 
@@ -131,7 +156,7 @@ def creation_table(ch_table, conn, schema, table_name, username):
 
 
 def formatting_gdf_for_shp_export(gdf, output_path, output_name):
-    """ Formatting GeoDataFrame for export
+    """ Formatting GeoDataFrame for export & export to shp
 
      :type gdf: GeoDataFrame
      :param output_path: complete path for the shapefile export
@@ -288,7 +313,7 @@ def geocode_df(df, latitude_field, longitude_field, epsg):
 
     logging.info("Geocode Xls")
 
-    geometry = [Point(xy) for xy in zip(df.longitude_field, df.latitude_field)]
+    geometry = [Point(xy) for xy in zip(df[longitude_field], df[latitude_field])]
     crs = {'init': 'epsg:' + str(epsg)}
     df = df.drop(columns=[longitude_field, latitude_field])
 
@@ -367,6 +392,44 @@ def geocode_with_api(path_to_rpls_csv):
     df_hlm = pd.read_csv(ch_dir + "/output/result_geocoding.csv", sep=';')
     return df_hlm
 
+
+def convert_3d_to_2d(geometry):
+    """ Tranform 3D geometry (from GeoDataFrame.Series) to 2D geometry """
+
+    new_geo = []
+    for p in geometry:
+        if p.has_z:
+            if p.geom_type == 'Polygon':
+                ac = mapping(p)["coordinates"]
+                shell = [(x, y) for x, y, z in ac[0]]
+                holes = []
+                for h in ac[1:]:
+                    hole = [(x, y) for x, y, z in h]
+                    holes.append(hole)
+                new_p = Polygon(shell=shell, holes=holes)
+                new_geo.append(new_p)
+            elif p.geom_type == 'MultiPolygon':
+                new_multi_p = []
+                for ac in p:
+                    ac = mapping(p)["coordinates"]
+                    shell = [(x, y) for x, y, z in ac[0]]
+                    holes = []
+                    for h in ac[1:]:
+                        hole = [(x, y) for x, y, z in h]
+                        holes.append(hole)
+                    new_p = Polygon(shell=shell, holes=holes)
+                    # new_p = Polygon(shell=ac[0], holes=ac[1:])
+                    new_multi_p.append(new_p)
+                new_geo.append(MultiPolygon(new_multi_p))
+            elif p.geom_type == 'LineString':
+                lines = [xy[:2] for xy in list(p.coords)]
+                new_p = LineString(lines)
+                new_geo.append(new_p)
+            elif p.geom_type == 'Point':
+                points = [xy[:2] for xy in list(p.coords)]
+                new_p = Point(points)
+                new_geo.append(new_p)
+    return new_geo
 
 """ Leaflet plugin """
 
