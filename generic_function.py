@@ -14,6 +14,22 @@ from sqlalchemy import create_engine
 
 # from advanced_script import raster_processing
 from unitary_tests import unitary_tests
+import json
+import logging
+import os
+
+import folium
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+from geoalchemy2 import Geometry, WKTElement
+import sqlalchemy
+from fiona.crs import from_epsg
+from shapely.geometry import Point
+from sqlalchemy import create_engine
+
+# from advanced_script import raster_processing
+from unitary_tests import unitary_tests
 
 """ Global variable """
 # formatting the console outputs
@@ -53,6 +69,7 @@ def polygon_to_multipolygon(gdf):
 
     return gdf
 
+
 def multipolygon_to_polygon(gdf):
     """ Transform GeoDataFrame (Surface) Geometry to simple Polygon - Deagregator """
 
@@ -67,6 +84,7 @@ def multipolygon_to_polygon(gdf):
 
     gdf_singlepoly.reset_index(inplace=True, drop=True)
     return gdf_singlepoly
+
 
 def write_output(gdf, table_name, schema, conn):
     """ Write GeoDataFrame in PostGis Table / execute some unitary tests
@@ -127,7 +145,7 @@ def execute_sql_request(ch_sql_request, sql_file, new_value, con):
     # possibility to retrieve the result of the request with a variable = con.execute(rqt).scalar()
 
 
-def creation_table(ch_table, conn, schema, table_name, username):
+def creation_table(ch_table, conn, schema, table_name, db_username):
     """
     Create empty table from a sql file
 
@@ -135,7 +153,7 @@ def creation_table(ch_table, conn, schema, table_name, username):
     :type conn: sqlalchemy.Engine
     :param schema: name of the output Postgis schema
     :param table_name:name of the output Postgis table
-    :param username: username for the Postgis connexion
+    :param db_username: username for the Postgis connexion
     """
 
     existing_request = "SELECT EXISTS ( SELECT 1 FROM information_schema.tables WHERE table_schema = '{}'" \
@@ -145,7 +163,7 @@ def creation_table(ch_table, conn, schema, table_name, username):
     if schema_exist is False:
         with open(ch_table, "r") as sql_file:
             rqt = sql_file.read().replace('NEW_TABLE_NAME', schema + "." + table_name).replace(
-                'all_rights_DATABASE_NAME', 'all_rights_' + table_name).replace('DATABASE_USERNAME', username)
+                'all_rights_DATABASE_NAME', 'all_rights_' + table_name).replace('DATABASE_USERNAME', db_username)
             conn.execute(rqt)
             logging.info('Creation new table - end ')
     else:
@@ -165,12 +183,23 @@ def formatting_gdf_for_shp_export(gdf, output_path, output_name):
      """
     logging.info('formatting & export GeoDataFrame')
     for gdf_column in gdf.columns:
+        if type(gdf[gdf_column].max()) in [str, unicode]:
+            gdf[gdf_column] = gdf[gdf_column].str.decode('utf-8-sig')
         if type(gdf[gdf_column][0]) == np.bool_:
             gdf[gdf_column] = gdf[gdf_column].astype(str)
         if type(gdf[gdf_column][0]) == pd._libs.tslib.Timestamp:
             gdf[gdf_column] = gdf[gdf_column].astype(str)
+        if type(gdf[gdf_column][gdf.index.min()]) == list:
+            gdf = gdf.drop(columns=[gdf_column])
+            continue
         if len(gdf_column) > 10:
             gdf = gdf.rename(columns={gdf_column: gdf_column[:10]})
+            gdf_column = gdf_column[:10]
+
+        # temporary patch for delete the list in the string field
+        for index_element in gdf[gdf_column].index:
+            if type(gdf[gdf_column][index_element]) == list:
+                gdf[gdf_column][index_element] = gdf[gdf_column][index_element][0]
 
     gdf.to_file(output_path + "/" + output_name + '.shp')
 
@@ -430,6 +459,7 @@ def convert_3d_to_2d(geometry):
                 new_p = Point(points)
                 new_geo.append(new_p)
     return new_geo
+
 
 """ Leaflet plugin """
 
