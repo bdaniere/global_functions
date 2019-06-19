@@ -173,6 +173,29 @@ def creation_table(ch_table, conn, schema, table_name, db_username):
 """ Function for work with shapefile """
 
 
+def read_shp(gdf_path, gdf_epsg):
+    """
+    Read shapefile and transform to GeoDataFrame
+
+    :param gdf_path: path to shp building
+    :param gdf_epsg: epsg code of shp building
+    :return: Building GeoDataFrame
+    """
+
+    logging.info("-- Read shp : " + gdf_path.split('/')[-1])
+    assert gdf_path.split('.')[-1] == 'shp', "the value of the key 'shp_building' must be a shapeflie"
+
+    try:
+        gdf = gpd.read_file(gdf_path)
+        gdf.crs = {"init": "epsg :" + gdf_epsg}
+        gdf.crs = {"init": "epsg : 4326"}
+    except IOError as ioe:
+        logging.warning(ioe)
+        sys.exit()
+
+    return gdf
+
+
 def formatting_gdf_for_shp_export(gdf, output_path, output_name):
     """ Formatting GeoDataFrame for export & export to shp
 
