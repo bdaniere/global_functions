@@ -1,6 +1,16 @@
+# -*- coding: utf-8 -*-
+# python 3
+"""
+Created on Mun 07 October 09:00:00 2019
+@author: bdaniere
+
+"""
+
 import json
 import logging
 import os
+import sys
+import subprocess
 
 import folium
 import geopandas as gpd
@@ -9,31 +19,18 @@ import pandas as pd
 from geoalchemy2 import Geometry, WKTElement
 import sqlalchemy
 from fiona.crs import from_epsg
-from shapely.geometry import Point
+from shapely.geometry import Point, MultiPolygon, Polygon, LineString, mapping
 from sqlalchemy import create_engine
 
-# from advanced_script import raster_processing
-from unitary_tests import unitary_tests
-import json
-import logging
-import os
 
-import folium
-import geopandas as gpd
-import numpy as np
-import pandas as pd
-from geoalchemy2 import Geometry, WKTElement
-import sqlalchemy
-from fiona.crs import from_epsg
-from shapely.geometry import Point
-from sqlalchemy import create_engine
-
-# from advanced_script import raster_processing
+from advanced_script import raster_processing
 from unitary_tests import unitary_tests
 
 """ Global variable """
 # formatting the console outputs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s -- %(levelname)s -- %(message)s')
+ch_dir = os.getcwd().replace('\\', '/')
+ch_output = ch_dir + "/output/"
 
 db_name = param["prod_connexion"]["db_name"]
 username = param["prod_connexion"]["username"]
@@ -41,7 +38,7 @@ password = param["prod_connexion"]["password"]
 host = param["prod_connexion"]["host"]
 port = param["prod_connexion"]["port"]
 prod_conn = "postgresql://{}:{}@{}:{}/{}".format(username, password, host, port,
-                                                      db_name)
+                                                 db_name)
 
 """ Functions for reading /writing with Postgis  """
 
@@ -167,7 +164,7 @@ def creation_table(ch_table, conn, schema, table_name, db_username):
             conn.execute(rqt)
             logging.info('Creation new table - end ')
     else:
-        logging.info("Table {} already exist".format(output_table_name))
+        logging.info("Table {} already exist".format(table_name))
 
 
 """ Function for work with shapefile """
@@ -206,7 +203,7 @@ def formatting_gdf_for_shp_export(gdf, output_path, output_name):
      """
     logging.info('formatting & export GeoDataFrame')
     for gdf_column in gdf.columns:
-        if type(gdf[gdf_column].max()) in [str, unicode]:
+        if type(gdf[gdf_column].max()) in [str]:
             gdf[gdf_column] = gdf[gdf_column].str.decode('utf-8-sig')
         if type(gdf[gdf_column][0]) == np.bool_:
             gdf[gdf_column] = gdf[gdf_column].astype(str)
@@ -256,7 +253,7 @@ def create_index(gdf):
     """ Increment index if ther are null or not_unique """
 
     if gdf.index.isnull().sum() > 0 or gdf.index.is_unique == False:
-        gdf.index = range(1, len(table) + 1)
+        gdf.index = range(1, len(gdf) + 1)
     return gdf
 
 
@@ -345,7 +342,7 @@ def elevation_recovery_from_dem(gdf):
         Warning : the raster_processing need parameters (not informed) in this function"""
 
     logging.info("recover elevation from DEM ")
-    gdf = advanced_script.raster_processing.GetRasterValueOnGeometry(gdf).gdf
+    gdf = raster_processing.GetRasterValueOnGeometry(gdf).gdf
     gdf = gdf.rename(columns={'raster_value': "elevation"})
 
     assert gdf.elevation.isna().sum() == 0, "All buildings have no elevation"
@@ -414,7 +411,7 @@ def find_hole_in_polygon_building(gdf):
     gdf_hole['area_building'] = gdf_hole.geometry.apply(lambda x: x.area)
     logging.info(
         "We found {} buildings with hole in the territory, which represents {} % of total building number".format(
-            gdf_hole.count().max(), simple_part, origin))
+            gdf_hole.count().max(), simple_part))
 
     return gdf_hole
 
@@ -484,6 +481,38 @@ def convert_3d_to_2d(geometry):
     return new_geo
 
 
+def gdf_to_json(gdf, orient='dict', epsg_code=2154, geometry_transformation=None):
+    """
+    Function to transform a GeoDataFrame to json object
+    :param gdf: gpd.GeoDataFrame
+    :param orient: pd.Series.to_dict parameter - output dictionary form
+    :param epsg_code: int -
+    :return:
+    """
+
+    logging.info("Transform geopandas.GeoDataFrame to dictionary ")
+
+    # check parameters validity
+    possible_orient = ['dict', 'list', 'series', 'split', 'records', 'index']
+    possible_geometry_transformation = ["wkt", None]
+    assert orient in possible_orient, "The orient paramater must be in " + str(possible_orient)
+    assert type(epsg_code) == int, "The epsg_code must be a integer type"
+    assert geometry_transformation in possible_geometry_transformation, "The orient paramater must be in " + str(
+        possible_geometry_transformation)
+
+    # Harmonization of the name of the geometry column
+    if gdf.geometry.name == 'geom':
+        gdf = gdf.rename(columns={"geom": "geometry"})
+
+    # Optional : transform geometry column to WKB format
+    if (orient in ['dict', 'liste', 'split', 'records', 'index']) and (geometry_transformation == 'wkt'):
+        gdf['geometry'] = gdf['geometry'].apply(lambda x: WKTElement(x.wkt, srid=epsg_code))
+
+    # Transform gpd.GeoDataFrame to dictionary object
+    output_json = gdf.to_dict(orient)
+    return output_json
+
+
 """ Leaflet plugin """
 
 
@@ -537,10 +566,12 @@ def folium_add_data_with_popup(gdf, name, color, interactive_map):
     return interactive_map
 
 
-def finalize_export_interactive_map(interactive_map):
+def finalize_export_interactive_map(interactive_map,ch_loc):
     """
         Export the interactive map create by the two functions above
         In this exemple, the path and the output name is determined
+        :param interactive_map: bokeh_map object
+        :param ch_loc: output folder path
     """
 
     logging.info("Export interactive map")
